@@ -1645,7 +1645,8 @@ class Material:
             # deep copy to not change the original material
             mat = copy_module.deepcopy(mat)
             if color:
-                mat.properties.pbr.base_color = list(Color(color))[:3]
+                rgba = list(Color(color))
+                mat.vis.base_color = tuple(rgba[:4] if len(rgba) >= 4 else (*rgba[:3], 1.0))
             if density:
                 mat.properties.mechanical.density = density
 
@@ -1699,26 +1700,36 @@ class Material:
     @property
     def pbr(self):
         """threejs-materials PBR rendering properties.
-        Derived from py-materials pbr properties if not overridden in constructor
+
+        Reads from pymat.vis (3.0 canonical path) with full mat-vis
+        texture support. Falls back to properties.pbr for pymat <3.0.
+        Can be overridden via constructor's pbr parameter.
         """
-        if self._pbr is None:
-            pbr = self._material.properties.pbr
-            return PbrProperties.create(
-                self._material.name,
-                color=pbr.base_color,
-                metalness=pbr.metallic,
-                roughness=pbr.roughness,
-                emissive=pbr.emissive,
-                ior=pbr.ior,
-                transmission=pbr.transmission,
-                clearcoat=pbr.clearcoat,
-                normal_map=pbr.normal_map,
-                roughness_map=pbr.roughness_map,
-                metalness_map=pbr.metallic_map,
-                ao_map=pbr.ambient_occlusion_map,
-            )
-        else:
+        if self._pbr is not None:
             return self._pbr
+
+        # Try vis adapters first (pymat 3.0 — includes mat-vis textures)
+        try:
+            from pymat.vis.adapters import to_threejs
+
+            threejs_dict = to_threejs(self._material)
+            return PbrProperties.from_dict(threejs_dict)
+        except (ImportError, Exception):
+            pass
+
+        # Fallback: read from .vis scalars or properties.pbr
+        vis = getattr(self._material, "vis", None)
+        pbr = self._material.properties.pbr
+        return PbrProperties.create(
+            self._material.name,
+            color=getattr(vis, "base_color", None) or pbr.base_color,
+            metalness=(vis.metallic if vis and vis.metallic is not None else pbr.metallic),
+            roughness=(vis.roughness if vis and vis.roughness is not None else pbr.roughness),
+            emissive=getattr(vis, "emissive", None) or pbr.emissive,
+            ior=(vis.ior if vis and vis.ior is not None else pbr.ior),
+            transmission=(vis.transmission if vis and vis.transmission is not None else pbr.transmission),
+            clearcoat=(vis.clearcoat if vis and vis.clearcoat is not None else pbr.clearcoat),
+        )
 
     def align_color(self):
         """Compute an interpolated color from the GLTF PBR material properties.
